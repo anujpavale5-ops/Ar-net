@@ -1,6 +1,6 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
-using System.Collections.Generic; // --- NEW: Required for the Lists in our naming logic ---
+using System.Collections.Generic;
 
 public class DevicePlacementManager : MonoBehaviour
 {
@@ -12,7 +12,15 @@ public class DevicePlacementManager : MonoBehaviour
     public Camera mainCamera;
 
     [Header("Device Size")]
+    [Tooltip("Size used for every device when Real World Scale is off")]
     public float targetDeviceSize = 1.2f;
+
+    [Tooltip("Size each device type to its real-world dimensions and give it a desk or cabinet")]
+    public bool realWorldScale = true;
+    public float pcSize = 0.85f;
+    public float switchSize = 0.55f;
+    public float routerSize = 0.45f;
+    public float serverSize = 2.0f;
 
     [Header("Spacing")]
     public float minimumSpacing = 0.5f;
@@ -21,10 +29,22 @@ public class DevicePlacementManager : MonoBehaviour
     public Material validGhostMaterial;
     public Material invalidGhostMaterial;
 
+    [Header("Floor")]
+    [Tooltip("Height of the floor devices rest on")]
+    public float floorHeight = 0f;
+
     private GameObject selectedPrefab;
     private GameObject ghostObject;
+    private Vector2 rightPressPosition;
 
-    // --- REMOVED hardcoded int counters ---
+    // Right-drag orbits the camera, so only a right *click* cancels placement
+    private const float CancelClickTolerance = 6f;
+
+    public bool IsPlacing => selectedPrefab != null;
+    public GameObject SelectedPrefab => selectedPrefab;
+
+    // Raised after a device has been placed (used by the first-person hands)
+    public event System.Action<GameObject> DevicePlaced;
 
     void Start()
     {
@@ -39,12 +59,30 @@ public class DevicePlacementManager : MonoBehaviour
 
         UpdateGhostPosition();
 
-        if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+        if (Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame)
+        {
+            CancelPlacement();
+            return;
+        }
+
+        Mouse mouse = Mouse.current;
+        if (mouse == null)
+            return;
+
+        Vector2 pointer = PointerUtil.ScreenPoint;
+
+        if (mouse.leftButton.wasPressedThisFrame && (PointerUtil.CursorCaptured || !PointerUtil.IsOverUI(pointer)))
         {
             PlaceDevice();
         }
 
-        if (Mouse.current != null && Mouse.current.rightButton.wasPressedThisFrame)
+        if (mouse.rightButton.wasPressedThisFrame)
+        {
+            rightPressPosition = pointer;
+        }
+
+        if (mouse.rightButton.wasReleasedThisFrame &&
+            Vector2.Distance(pointer, rightPressPosition) < CancelClickTolerance)
         {
             CancelPlacement();
         }
@@ -90,7 +128,13 @@ public class DevicePlacementManager : MonoBehaviour
 
         ghostObject.name = "PlacementPreview";
 
+        // Keep the ghost out of device lists, naming and click handling
+        NetworkDevice ghostDevice = ghostObject.GetComponent<NetworkDevice>();
+        if (ghostDevice != null) ghostDevice.isPreviewModel = true;
+        SetLayerRecursively(ghostObject, LayerMask.NameToLayer("Ignore Raycast"));
+
         NormalizeSize(ghostObject);
+        if (realWorldScale) DeviceFurniture.Attach(ghostObject);
 
         DisablePhysics(ghostObject);
 
@@ -108,20 +152,20 @@ public class DevicePlacementManager : MonoBehaviour
         if (Mouse.current == null)
             return;
 
-        Vector2 mousePosition = Mouse.current.position.ReadValue();
+        Vector2 mousePosition = PointerUtil.ScreenPoint;
 
         Ray ray = mainCamera.ScreenPointToRay(mousePosition);
 
-        Plane placementPlane = new Plane(Vector3.up, Vector3.zero);
+        Plane placementPlane = new Plane(Vector3.up, new Vector3(0f, floorHeight, 0f));
 
         if (!placementPlane.Raycast(ray, out float distance))
             return;
 
         Vector3 position = ray.GetPoint(distance);
-
-        position.y = 0f;
+        position.y = floorHeight;
 
         ghostObject.transform.position = position;
+        RestOnFloor(ghostObject);
 
         bool valid = IsValidPlacement(ghostObject);
 
@@ -142,24 +186,66 @@ public class DevicePlacementManager : MonoBehaviour
             return;
         }
 
-        Vector3 position = ghostObject.transform.position;
-
-        GameObject device = Instantiate(
-            selectedPrefab,
-            position,
-            Quaternion.identity
-        );
-
-        NormalizeSize(device);
-
-        AssignDeviceName(device);
-
-        Debug.Log("Created device: " + device.name);
+        GameObject device = CreateDevice(selectedPrefab, ghostObject.transform.position, null);
 
         Destroy(ghostObject);
 
         ghostObject = null;
         selectedPrefab = null;
+
+        NetworkDevice.MarkTopologyChanged();
+        DevicePlaced?.Invoke(device);
+        LabSounds.Play(LabSound.Place);
+
+        if (NetworkVisualizer.Instance != null)
+            NetworkVisualizer.Instance.Pulse(device.transform.position, NetworkVisualizer.Instance.hopColor, 1.4f);
+    }
+
+    GameObject CreateDevice(GameObject prefab, Vector3 position, string deviceName)
+    {
+        position.y = floorHeight;
+        GameObject device = Instantiate(prefab, position, Quaternion.identity);
+
+        NormalizeSize(device);
+        if (realWorldScale) DeviceFurniture.Attach(device);
+        RestOnFloor(device);
+
+        if (string.IsNullOrEmpty(deviceName)) AssignDeviceName(device);
+        else
+        {
+            device.name = deviceName;
+            NetworkDevice network = device.GetComponent<NetworkDevice>();
+            if (network != null) network.deviceName = deviceName;
+        }
+
+        return device;
+    }
+
+    public GameObject PrefabFor(string deviceType)
+    {
+        switch ((deviceType ?? "").ToLowerInvariant())
+        {
+            case "pc": return pcPrefab;
+            case "switch": return switchPrefab;
+            case "router": return routerPrefab;
+            case "server": return serverPrefab;
+            default: return null;
+        }
+    }
+
+    // Creates a device directly (used when loading saved labs and missions)
+    public NetworkDevice SpawnDevice(string deviceType, Vector3 position, string deviceName = null)
+    {
+        GameObject prefab = PrefabFor(deviceType);
+        if (prefab == null)
+        {
+            Debug.LogError("SpawnDevice: unknown device type " + deviceType);
+            return null;
+        }
+
+        GameObject device = CreateDevice(prefab, position, deviceName);
+        NetworkDevice.MarkTopologyChanged();
+        return device.GetComponent<NetworkDevice>();
     }
 
     public void CancelPlacement()
@@ -171,23 +257,55 @@ public class DevicePlacementManager : MonoBehaviour
         }
 
         selectedPrefab = null;
+    }
 
-        Debug.Log("Device placement cancelled");
+    // Lift the model so the bottom of its bounds sits on the floor, whatever its pivot
+    void RestOnFloor(GameObject device)
+    {
+        Renderer[] renderers = device.GetComponentsInChildren<Renderer>();
+        if (renderers.Length == 0)
+            return;
+
+        float lowest = float.MaxValue;
+        foreach (Renderer renderer in renderers)
+        {
+            if (renderer is ParticleSystemRenderer || renderer is TrailRenderer || renderer is LineRenderer)
+                continue;
+
+            lowest = Mathf.Min(lowest, renderer.bounds.min.y);
+        }
+
+        if (lowest == float.MaxValue)
+            return;
+
+        device.transform.position += Vector3.up * (floorHeight - lowest);
+    }
+
+    static void SetLayerRecursively(GameObject target, int layer)
+    {
+        if (layer < 0)
+            return;
+
+        foreach (Transform child in target.GetComponentsInChildren<Transform>(true))
+        {
+            child.gameObject.layer = layer;
+        }
+    }
+
+    float TargetSize(GameObject device)
+    {
+        if (!realWorldScale) return targetDeviceSize;
+        if (device.CompareTag("PC")) return pcSize;
+        if (device.CompareTag("Switch")) return switchSize;
+        if (device.CompareTag("Router")) return routerSize;
+        if (device.CompareTag("Server")) return serverSize;
+        return targetDeviceSize;
     }
 
     void NormalizeSize(GameObject device)
     {
-        Renderer[] renderers = device.GetComponentsInChildren<Renderer>();
-
-        if (renderers.Length == 0)
-            return;
-
-        Bounds bounds = renderers[0].bounds;
-
-        for (int i = 1; i < renderers.Length; i++)
-        {
-            bounds.Encapsulate(renderers[i].bounds);
-        }
+        // Measure the model only, so the floating label doesn't shrink the device
+        Bounds bounds = DeviceFurniture.ModelBounds(device);
 
         float largestDimension = Mathf.Max(
             bounds.size.x,
@@ -198,9 +316,16 @@ public class DevicePlacementManager : MonoBehaviour
         if (largestDimension <= 0.001f)
             return;
 
-        float scaleMultiplier = targetDeviceSize / largestDimension;
+        float scaleMultiplier = TargetSize(device) / largestDimension;
 
         device.transform.localScale *= scaleMultiplier;
+
+        // Keep name labels readable however small or large the device is
+        float labelCompensation = targetDeviceSize / TargetSize(device);
+        foreach (FloatingLabel label in device.GetComponentsInChildren<FloatingLabel>(true))
+        {
+            label.transform.localScale *= labelCompensation;
+        }
     }
 
     bool IsValidPlacement(GameObject device)
@@ -309,18 +434,14 @@ public class DevicePlacementManager : MonoBehaviour
         }
     }
 
-    // --- NEW: Smart Naming Logic ---
     private string GetNextAvailableName(string prefix)
     {
-        NetworkDevice[] allDevices = FindObjectsByType<NetworkDevice>(FindObjectsSortMode.None);
-        List<int> usedNumbers = new List<int>();
+        HashSet<int> usedNumbers = new HashSet<int>();
 
-        foreach (NetworkDevice device in allDevices)
+        foreach (NetworkDevice device in NetworkDevice.All)
         {
-            // Make sure the device actually has a name and starts with our prefix (e.g. "PC")
             if (device != null && !string.IsNullOrEmpty(device.deviceName) && device.deviceName.StartsWith(prefix) && !device.isPreviewModel)
             {
-                // Strip out the prefix to just get the number (e.g. "PC1" -> "1")
                 string numberPart = device.deviceName.Substring(prefix.Length);
                 if (int.TryParse(numberPart, out int num))
                 {
@@ -330,7 +451,6 @@ public class DevicePlacementManager : MonoBehaviour
         }
 
         int nextNumber = 1;
-        // Keep counting up until we find a number that isn't being used
         while (usedNumbers.Contains(nextNumber))
         {
             nextNumber++;
@@ -352,7 +472,6 @@ public class DevicePlacementManager : MonoBehaviour
         string finalName = GetNextAvailableName(prefix);
         device.name = finalName;
 
-        // Apply the hierarchy name to the internal NetworkDevice script
         NetworkDevice netDeviceScript = device.GetComponent<NetworkDevice>();
         if (netDeviceScript != null)
         {

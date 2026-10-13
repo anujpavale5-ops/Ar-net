@@ -77,14 +77,14 @@ public class UIManager : MonoBehaviour
   private void ClearActiveModes()
     {
         // 1. Check for Deletion Mode and turn it off
-        DeviceDeletionManager deleteManager = FindObjectOfType<DeviceDeletionManager>();
+        DeviceDeletionManager deleteManager = FindAnyObjectByType<DeviceDeletionManager>();
         if (deleteManager != null && deleteManager.isDeletionMode)
         {
             deleteManager.ToggleDeletionMode(); 
         }
 
         // 2. Check for Connection Mode and turn it off
-        DeviceConnector connectManager = FindObjectOfType<DeviceConnector>();
+        DeviceConnector connectManager = FindAnyObjectByType<DeviceConnector>();
         
         // --- FIXED: Now using the exact names from your DeviceConnector script ---
         if (connectManager != null && connectManager.isConnectingMode)

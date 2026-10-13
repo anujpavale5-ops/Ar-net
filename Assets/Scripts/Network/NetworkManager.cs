@@ -3,67 +3,38 @@ using UnityEngine;
 
 public class NetworkManager : MonoBehaviour
 {
-    public List<NetworkDevice> devices = new List<NetworkDevice>();
-    public List<NetworkConnection> connections = new List<NetworkConnection>();
-
     public GameObject packetPrefab;
+
+    [Tooltip("Height above the device pivot that packets travel at")]
+    public float packetHeight = 0.3f;
 
     private NetworkLogUI networkLog;
 
+    public IEnumerable<NetworkDevice> Devices
+    {
+        get
+        {
+            foreach (NetworkDevice device in NetworkDevice.All)
+            {
+                if (device != null && !device.isPreviewModel) yield return device;
+            }
+        }
+    }
+
     void Start()
     {
-        FindDevices();
-        FindConnections();
-
-        networkLog = FindFirstObjectByType<NetworkLogUI>();
-
-        Debug.Log("Devices found: " + devices.Count);
-        Debug.Log("Connections found: " + connections.Count);
-
-        NetworkDevice pc1 = GameObject.Find("PC1")?.GetComponent<NetworkDevice>();
-        NetworkDevice switch1 = GameObject.Find("Switch1")?.GetComponent<NetworkDevice>();
-        NetworkDevice router1 = GameObject.Find("Router1")?.GetComponent<NetworkDevice>();
-        NetworkDevice server1 = GameObject.Find("Server1")?.GetComponent<NetworkDevice>();
-
-        if (pc1 != null && switch1 != null)
-        {
-            Debug.Log("PC1 → Switch1: " + AreConnected(pc1, switch1));
-        }
-
-        if (switch1 != null && router1 != null)
-        {
-            Debug.Log("Switch1 → Router1: " + AreConnected(switch1, router1));
-        }
-
-        if (router1 != null && server1 != null)
-        {
-            Debug.Log("Router1 → Server1: " + AreConnected(router1, server1));
-        }
+        networkLog = FindAnyObjectByType<NetworkLogUI>();
     }
 
-    void FindDevices()
+    NetworkLogUI Log
     {
-        devices.Clear();
-
-        NetworkDevice[] foundDevices = FindObjectsByType<NetworkDevice>(
-            FindObjectsSortMode.None
-        );
-
-        devices.AddRange(foundDevices);
+        get
+        {
+            if (networkLog == null) networkLog = FindAnyObjectByType<NetworkLogUI>();
+            return networkLog;
+        }
     }
 
-    void FindConnections()
-    {
-        connections.Clear();
-
-        NetworkConnection[] foundConnections = FindObjectsByType<NetworkConnection>(
-            FindObjectsSortMode.None
-        );
-
-        connections.AddRange(foundConnections);
-    }
-
-    // Instantiates a cable and connects two devices at runtime
     public NetworkConnection ConnectDevices(NetworkDevice a, NetworkDevice b, GameObject cablePrefab)
     {
         if (a == null || b == null || a == b)
@@ -72,10 +43,12 @@ public class NetworkManager : MonoBehaviour
             return null;
         }
 
-        if (AreConnected(a, b))
+        NetworkConnection existing = NetworkConnection.Between(a, b);
+        if (existing != null)
         {
-            Debug.LogWarning($"{a.deviceName} and {b.deviceName} are already connected!");
-            return null;
+            if (!existing.isConnected) existing.Reconnect();
+            else Debug.LogWarning($"{a.deviceName} and {b.deviceName} are already connected!");
+            return existing;
         }
 
         if (cablePrefab == null)
@@ -94,130 +67,268 @@ public class NetworkManager : MonoBehaviour
             return null;
         }
 
-        // Initialize your existing NetworkConnection fields
         connection.deviceA = a;
         connection.deviceB = b;
         connection.isConnected = true;
         connection.ResetVisual();
+        NetworkDevice.MarkTopologyChanged();
+        LabSounds.Play(LabSound.Plug);
 
-        if (!connections.Contains(connection))
-        {
-            connections.Add(connection);
-        }
-
-        Debug.Log($"Connected: {a.deviceName} ↔ {b.deviceName}");
         return connection;
     }
 
     public bool AreConnected(NetworkDevice deviceA, NetworkDevice deviceB)
     {
-        foreach (NetworkConnection connection in connections)
-        {
-            if (connection == null)
-                continue;
-
-            if (!connection.isConnected)
-                continue;
-
-            if (connection.Connects(deviceA, deviceB))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        NetworkConnection connection = NetworkConnection.Between(deviceA, deviceB);
+        return connection != null && connection.isConnected;
     }
 
-    public List<NetworkDevice> FindPath(NetworkDevice start, NetworkDevice target)
+    // Shortest physical path. Only switches (and routers when allowRouters) may forward traffic;
+    // PCs and servers are always endpoints.
+    public List<NetworkDevice> FindPath(NetworkDevice start, NetworkDevice target, bool allowRouters = true)
     {
         List<NetworkDevice> emptyPath = new List<NetworkDevice>();
 
         if (start == null || target == null || !start.isOnline || !target.isOnline)
-        {
-            Debug.LogWarning("FindPath: Start or target is NULL or offline.");
             return emptyPath;
-        }
 
-        Queue<NetworkDevice> queue = new Queue<NetworkDevice>();
+        if (start == target)
+            return new List<NetworkDevice> { start };
+
+        Dictionary<NetworkDevice, List<NetworkDevice>> adjacency = BuildAdjacency();
         Dictionary<NetworkDevice, NetworkDevice> previous = new Dictionary<NetworkDevice, NetworkDevice>();
-        HashSet<NetworkDevice> visited = new HashSet<NetworkDevice>();
+        Queue<NetworkDevice> queue = new Queue<NetworkDevice>();
 
         queue.Enqueue(start);
-        visited.Add(start);
+        previous[start] = null;
 
         while (queue.Count > 0)
         {
             NetworkDevice current = queue.Dequeue();
+            if (current == target) break;
 
-            if (current == target)
-                break;
+            bool canForward = current == start || current.IsSwitch || (allowRouters && current.IsRouter);
+            if (!canForward || !adjacency.TryGetValue(current, out List<NetworkDevice> neighbors))
+                continue;
 
-            foreach (NetworkConnection connection in connections)
+            foreach (NetworkDevice neighbor in neighbors)
             {
-                if (connection == null || !connection.isConnected)
-                    continue;
+                if (!neighbor.isOnline || previous.ContainsKey(neighbor)) continue;
 
-                NetworkDevice neighbor = null;
-
-                if (connection.deviceA == current)
-                {
-                    neighbor = connection.deviceB;
-                }
-                else if (connection.deviceB == current)
-                {
-                    neighbor = connection.deviceA;
-                }
-
-                if (neighbor == null || !neighbor.isOnline || visited.Contains(neighbor))
-                    continue;
-
-                visited.Add(neighbor);
                 previous[neighbor] = current;
                 queue.Enqueue(neighbor);
             }
         }
 
-        if (!visited.Contains(target))
-        {
-            Debug.Log($"NO ROUTE FOUND: {start.deviceName} → {target.deviceName}");
-
-            if (networkLog == null)
-            {
-                networkLog = FindFirstObjectByType<NetworkLogUI>();
-            }
-
-            if (networkLog != null)
-            {
-                networkLog.ShowFailedPacket(start, target, "NO ROUTE AVAILABLE");
-            }
-            else
-            {
-                Debug.LogError("NetworkLogUI could not be found.");
-            }
-
+        if (!previous.ContainsKey(target))
             return emptyPath;
-        }
 
         List<NetworkDevice> path = new List<NetworkDevice>();
-        NetworkDevice currentDevice = target;
-
-        while (currentDevice != start)
+        for (NetworkDevice node = target; node != null; node = previous[node])
         {
-            path.Add(currentDevice);
+            path.Add(node);
+        }
+        path.Reverse();
+        return path;
+    }
 
-            if (!previous.ContainsKey(currentDevice))
-            {
-                Debug.LogError("Path reconstruction failed.");
-                return emptyPath;
-            }
+    Dictionary<NetworkDevice, List<NetworkDevice>> BuildAdjacency()
+    {
+        Dictionary<NetworkDevice, List<NetworkDevice>> adjacency = new Dictionary<NetworkDevice, List<NetworkDevice>>();
 
-            currentDevice = previous[currentDevice];
+        foreach (NetworkConnection connection in NetworkConnection.All)
+        {
+            if (connection == null || !connection.isConnected) continue;
+            if (connection.deviceA == null || connection.deviceB == null) continue;
+
+            AddEdge(adjacency, connection.deviceA, connection.deviceB);
+            AddEdge(adjacency, connection.deviceB, connection.deviceA);
+        }
+        return adjacency;
+    }
+
+    static void AddEdge(Dictionary<NetworkDevice, List<NetworkDevice>> adjacency, NetworkDevice from, NetworkDevice to)
+    {
+        if (!adjacency.TryGetValue(from, out List<NetworkDevice> list))
+        {
+            list = new List<NetworkDevice>();
+            adjacency[from] = list;
+        }
+        list.Add(to);
+    }
+
+    // Works out the route a packet would really take: switched within a subnet,
+    // via the gateway router(s) between subnets. Returns null and a reason on failure.
+    public List<NetworkDevice> BuildRoute(NetworkDevice source, NetworkDevice destination, out string reason)
+    {
+        reason = null;
+
+        if (source == null || destination == null) { reason = "Select a source and destination"; return null; }
+        if (source == destination) { reason = "Source and destination are the same device"; return null; }
+        if (!source.isOnline) { reason = source.deviceName + " is offline"; return null; }
+        if (!destination.isOnline) { reason = destination.deviceName + " is offline"; return null; }
+
+        if (source.IsSwitch || destination.IsSwitch)
+        {
+            reason = "Switches are layer-2 devices and cannot send or receive packets";
+            return null;
         }
 
-        path.Add(start);
-        path.Reverse();
+        if (!source.IsConfigured) { reason = source.deviceName + " has no valid IP / subnet mask"; return null; }
+        if (!destination.IsConfigured) { reason = destination.deviceName + " has no valid IP / subnet mask"; return null; }
 
-        return path;
+        if (FindAddressConflict(source, out reason) || FindAddressConflict(destination, out reason))
+            return null;
+
+        bool sameSubnet = source.SharesSubnetWith(destination) && destination.SharesSubnetWith(source);
+
+        if (sameSubnet)
+        {
+            List<NetworkDevice> lanPath = FindPath(source, destination, allowRouters: false);
+            if (lanPath.Count < 2)
+            {
+                reason = "No switched path inside the subnet (check cables)";
+                return null;
+            }
+            return lanPath;
+        }
+
+        NetworkDevice sourceGateway = ResolveGateway(source, out reason);
+        if (sourceGateway == null) { reason = "Destination unreachable: " + reason; return null; }
+
+        NetworkDevice destinationGateway = ResolveGateway(destination, out reason);
+        if (destinationGateway == null) { reason = "Request timed out (no reply path): " + reason; return null; }
+
+        List<NetworkDevice> route = new List<NetworkDevice>();
+
+        if (!AppendSegment(route, source, sourceGateway, false))
+        {
+            reason = $"{source.deviceName} cannot reach its gateway {sourceGateway.deviceName}";
+            return null;
+        }
+
+        if (!AppendSegment(route, sourceGateway, destinationGateway, true))
+        {
+            reason = $"No route between routers {sourceGateway.deviceName} and {destinationGateway.deviceName}";
+            return null;
+        }
+
+        if (!AppendSegment(route, destinationGateway, destination, false))
+        {
+            reason = $"{destinationGateway.deviceName} cannot reach {destination.deviceName}";
+            return null;
+        }
+
+        if (BlockedByAcl(route, source, destination, out reason)) return null;
+
+        return route;
+    }
+
+    // Any router on the path can drop the traffic with its access list
+    static bool BlockedByAcl(List<NetworkDevice> route, NetworkDevice source, NetworkDevice destination, out string reason)
+    {
+        reason = null;
+        uint sourceAddress = source.Addresses[0];
+        uint destinationAddress = destination.Addresses[0];
+
+        foreach (NetworkDevice hop in route)
+        {
+            if (hop.Blocks(sourceAddress, destinationAddress, out AclRule rule))
+            {
+                reason = $"Blocked by ACL on {hop.deviceName} ({rule})";
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool AppendSegment(List<NetworkDevice> route, NetworkDevice from, NetworkDevice to, bool allowRouters)
+    {
+        if (from == to)
+        {
+            if (route.Count == 0) route.Add(from);
+            return true;
+        }
+
+        List<NetworkDevice> segment = FindPath(from, to, allowRouters);
+        if (segment.Count < 2) return false;
+
+        int startIndex = route.Count > 0 && route[route.Count - 1] == segment[0] ? 1 : 0;
+        for (int i = startIndex; i < segment.Count; i++)
+        {
+            route.Add(segment[i]);
+        }
+        return true;
+    }
+
+    NetworkDevice ResolveGateway(NetworkDevice device, out string reason)
+    {
+        reason = null;
+        if (device.IsRouter) return device;
+
+        if (string.IsNullOrWhiteSpace(device.gateway))
+        {
+            reason = device.deviceName + " has no default gateway";
+            return null;
+        }
+
+        if (!IpUtil.TryParse(device.gateway, out uint gatewayAddress))
+        {
+            reason = device.deviceName + " has an invalid gateway address";
+            return null;
+        }
+
+        if (!device.IsInSameSubnet(gatewayAddress))
+        {
+            reason = $"gateway {device.gateway} is outside {device.deviceName}'s subnet";
+            return null;
+        }
+
+        foreach (NetworkDevice candidate in Devices)
+        {
+            if (candidate.HasAddress(gatewayAddress))
+            {
+                if (candidate.IsRouter) return candidate;
+
+                reason = $"gateway {device.gateway} belongs to {candidate.deviceName}, which is not a router";
+                return null;
+            }
+        }
+
+        reason = $"no router owns gateway {device.gateway}";
+        return null;
+    }
+
+    bool FindAddressConflict(NetworkDevice device, out string reason)
+    {
+        reason = null;
+
+        foreach (uint address in device.Addresses)
+        {
+            foreach (NetworkDevice other in Devices)
+            {
+                if (other != device && other.HasAddress(address))
+                {
+                    reason = $"IP conflict: {IpUtil.ToString(address)} is used by {device.deviceName} and {other.deviceName}";
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Single entry point used by every UI that sends packets
+    public bool SendPacket(NetworkDevice source, NetworkDevice destination)
+    {
+        List<NetworkDevice> route = BuildRoute(source, destination, out string reason);
+
+        if (route == null)
+        {
+            HandleFailedPacket(source, destination, reason);
+            return false;
+        }
+
+        return CreatePacket(source, destination, route) != null;
     }
 
     public GameObject CreatePacket(NetworkDevice source, NetworkDevice destination, List<NetworkDevice> path)
@@ -230,65 +341,59 @@ public class NetworkManager : MonoBehaviour
 
         if (path == null || path.Count < 2)
         {
-            HandleFailedPacket(source, destination, "NO ROUTE AVAILABLE");
+            HandleFailedPacket(source, destination, "No route available");
             return null;
         }
 
         if (packetPrefab == null)
         {
-            Debug.LogError("Packet prefab is not assigned.");
-            HandleFailedPacket(source, destination, "PACKET PREFAB NOT ASSIGNED");
+            HandleFailedPacket(source, destination, "Packet prefab not assigned");
             return null;
         }
 
-        GameObject packetObject = Instantiate(
-            packetPrefab,
-            source.transform.position + Vector3.up * 0.3f,
-            Quaternion.identity
-        );
-
+        GameObject packetObject = Instantiate(packetPrefab, source.transform.position + Vector3.up * packetHeight, Quaternion.identity);
         Packet packet = packetObject.GetComponent<Packet>();
 
         if (packet == null)
         {
-            Debug.LogError("Packet script missing from prefab.");
             Destroy(packetObject);
-            HandleFailedPacket(source, destination, "PACKET SCRIPT MISSING");
+            HandleFailedPacket(source, destination, "Packet script missing on prefab");
             return null;
         }
 
-        if (NetworkStatistics.Instance != null)
-        {
-            NetworkStatistics.Instance.PacketSent();
-        }
+        if (NetworkStatistics.Instance != null) NetworkStatistics.Instance.PacketSent();
 
         packet.Initialize(source, destination, path);
 
-        Debug.Log($"Packet created: {source.deviceName} → {destination.deviceName}");
+        if (NetworkVisualizer.Instance != null) NetworkVisualizer.Instance.ShowRoute(path, true, 1.5f);
+
         return packetObject;
     }
 
-    void HandleFailedPacket(NetworkDevice source, NetworkDevice destination, string reason)
+    public void HandleFailedPacket(NetworkDevice source, NetworkDevice destination, string reason)
     {
         if (NetworkStatistics.Instance != null)
         {
+            NetworkStatistics.Instance.PacketSent();
             NetworkStatistics.Instance.PacketFailed();
         }
 
-        Debug.Log($"PACKET FAILED: {source.deviceName} → {destination.deviceName} | {reason}");
+        LabSounds.Play(LabSound.Error);
 
-        if (networkLog == null)
-        {
-            networkLog = FindFirstObjectByType<NetworkLogUI>();
-        }
+        string sourceName = source != null ? source.deviceName : "?";
+        string destinationName = destination != null ? destination.deviceName : "?";
+        Debug.Log($"PACKET FAILED: {sourceName} → {destinationName} | {reason}");
 
-        if (networkLog != null)
+        if (Log != null && source != null && destination != null)
+            Log.ShowFailedPacket(source, destination, reason);
+
+        if (source != null)
         {
-            networkLog.ShowFailedPacket(source, destination, reason);
-        }
-        else
-        {
-            Debug.LogError("NetworkLogUI could not be found while reporting failure.");
+            DeviceLED led = source.GetComponentInChildren<DeviceLED>();
+            if (led != null) led.BlinkError();
+
+            if (NetworkVisualizer.Instance != null)
+                NetworkVisualizer.Instance.Pulse(source.transform.position, NetworkVisualizer.Instance.failureColor);
         }
     }
 }

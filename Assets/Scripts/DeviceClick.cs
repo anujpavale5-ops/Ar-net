@@ -9,7 +9,7 @@ public class DeviceClick : MonoBehaviour
     {
         if (infoPanel == null)
         {
-            infoPanel = FindFirstObjectByType<DeviceInfoPanel>();
+            infoPanel = FindAnyObjectByType<DeviceInfoPanel>();
         }
     }
 

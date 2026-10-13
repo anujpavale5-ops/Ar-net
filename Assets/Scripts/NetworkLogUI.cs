@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 
@@ -13,104 +14,114 @@ public class NetworkLogUI : MonoBehaviour
 
     public int maxPackets = 3;
 
-    private string[] packetLogs = new string[10];
-    private int packetCount = 0;
+    private readonly List<string> packetLogs = new List<string>();
 
-    private string currentPacket = "";
+    // Packets currently in flight, in the order they were sent
+    private readonly List<object> liveOrder = new List<object>();
+    private readonly Dictionary<object, string> liveEntries = new Dictionary<object, string>();
 
     public void ClearLog()
     {
-        packetCount = 0;
-        currentPacket = "";
+        packetLogs.Clear();
+        liveOrder.Clear();
+        liveEntries.Clear();
+        RefreshLog();
+    }
 
-        for (int i = 0; i < packetLogs.Length; i++)
+    public void StartPacket(object packet, NetworkDevice source, NetworkDevice destination)
+    {
+        if (!liveEntries.ContainsKey(packet)) liveOrder.Add(packet);
+        liveEntries[packet] = source.deviceName + " → " + destination.deviceName + "\nSTATUS: TRANSMITTING...";
+        RefreshLog();
+    }
+
+    public void AddHop(object packet, NetworkDevice from, NetworkDevice to)
+    {
+        if (!liveEntries.ContainsKey(packet)) return;
+        liveEntries[packet] += "\n• " + from.deviceName + " → " + to.deviceName;
+        RefreshLog();
+    }
+
+    public void AddHopFailure(object packet, NetworkDevice from, NetworkDevice to)
+    {
+        if (!liveEntries.ContainsKey(packet)) return;
+        liveEntries[packet] += "\n× " + from.deviceName + " → " + to.deviceName;
+        RefreshLog();
+    }
+
+    public void CompletePacket(object packet, NetworkDevice destination)
+    {
+        FinishLive(packet, "\nSTATUS: DELIVERED");
+    }
+
+    public void FailedPacket(object packet, string reason)
+    {
+        FinishLive(packet, "\nSTATUS: FAILED ×\n" + reason);
+    }
+
+    void FinishLive(object packet, string suffix)
+    {
+        if (liveEntries.TryGetValue(packet, out string entry))
         {
-            packetLogs[i] = "";
+            liveEntries.Remove(packet);
+            liveOrder.Remove(packet);
+            AddToHistory(entry.Replace("\nSTATUS: TRANSMITTING...", "") + suffix);
         }
-
-        RefreshLog();
-    }
-
-    public void StartPacket(NetworkDevice source, NetworkDevice destination)
-    {
-        currentPacket = source.deviceName + " → " + destination.deviceName + "\nSTATUS: TRANSMITTING...";
-        RefreshLog();
-    }
-
-    public void AddHop(NetworkDevice from, NetworkDevice to)
-    {
-        currentPacket += "\n✓ " + from.deviceName + " → " + to.deviceName;
-        RefreshLog();
-    }
-
-    public void AddHopFailure(NetworkDevice from, NetworkDevice to)
-    {
-        currentPacket += "\n✕ " + from.deviceName + " → " + to.deviceName;
-        RefreshLog();
-    }
-
-    public void CompletePacket(NetworkDevice destination)
-    {
-        currentPacket += "\nSTATUS: DELIVERED ✓";
-        AddPacketToHistory();
-        currentPacket = "";
-        RefreshLog();
-    }
-
-    public void FailedPacket(string reason)
-    {
-        currentPacket += "\nSTATUS: FAILED ✕\n" + reason;
-        AddPacketToHistory();
-        currentPacket = "";
         RefreshLog();
     }
 
     public void ShowFailedPacket(NetworkDevice source, NetworkDevice destination, string reason)
     {
-        Debug.Log("NO ROUTE LOG: " + source.deviceName + " → " + destination.deviceName);
-
-        currentPacket = source.deviceName + " → " + destination.deviceName + 
-                        "\n✕ NO ROUTE AVAILABLE" + 
-                        "\nSTATUS: FAILED" + 
-                        "\nREASON: " + reason;
-
-        AddPacketToHistory();
-        currentPacket = "";
+        AddToHistory(source.deviceName + " → " + destination.deviceName +
+                     "\nSTATUS: FAILED ×" +
+                     "\nREASON: " + reason);
         RefreshLog();
     }
 
-    // === THE NEW METHOD TO HANDLE DISCONNECTIONS ===
     public void LogDisconnection(NetworkDevice deviceA, NetworkDevice deviceB)
     {
-        // Treat the disconnection as an event in the history log
-        currentPacket = "SYSTEM ALERT\n" + 
-                        "✕ CABLE DISCONNECTED\n" + 
-                        deviceA.deviceName + " ⇎ " + deviceB.deviceName;
-
-        AddPacketToHistory();
-        currentPacket = "";
+        AddToHistory("SYSTEM ALERT\n" +
+                     "× CABLE DISCONNECTED\n" +
+                     deviceA.deviceName + " × " + deviceB.deviceName);
         RefreshLog();
     }
 
-    void AddPacketToHistory()
+    void AddToHistory(string entry)
     {
-        if (string.IsNullOrEmpty(currentPacket))
+        if (string.IsNullOrEmpty(entry))
             return;
 
-        if (packetCount < maxPackets)
-        {
-            packetLogs[packetCount] = currentPacket;
-            packetCount++;
-        }
-        else
-        {
-            for (int i = 0; i < maxPackets - 1; i++)
-            {
-                packetLogs[i] = packetLogs[i + 1];
-            }
+        packetLogs.Add(entry);
 
-            packetLogs[maxPackets - 1] = currentPacket;
+        while (packetLogs.Count > Mathf.Max(1, maxPackets))
+        {
+            packetLogs.RemoveAt(0);
         }
+    }
+
+    static string Heading(string text, Color color)
+    {
+        return $"<size=80%><b><color={UITheme.Hex(color)}>{text}</color></b></size>\n";
+    }
+
+    // Colour each log line by what it reports
+    static string Colorize(string block)
+    {
+        string[] lines = block.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            Color color = UITheme.TextPrimary;
+
+            if (line.Contains("DELIVERED")) color = UITheme.Success;
+            else if (line.Contains("FAILED") || line.StartsWith("×") || line.StartsWith("REASON")) color = UITheme.Failure;
+            else if (line.Contains("SYSTEM ALERT") || line.Contains("DISCONNECTED")) color = UITheme.Warning;
+            else if (line.Contains("TRANSMITTING")) color = UITheme.Accent;
+            else if (line.StartsWith("•")) color = UITheme.TextSecondary;
+
+            lines[i] = $"<color={UITheme.Hex(color)}>{line}</color>";
+        }
+        return string.Join("\n", lines);
     }
 
     void RefreshLog()
@@ -118,24 +129,25 @@ public class NetworkLogUI : MonoBehaviour
         if (logText == null)
             return;
 
-        string finalText = "NETWORK ACTIVITY\n\n";
+        string finalText = $"<b><color={UITheme.Hex(UITheme.Accent)}>NETWORK ACTIVITY</color></b>\n\n";
 
-        for (int i = packetCount - 1; i >= 0; i--)
+        // Live packet first so it is never cut off, then history newest-first
+        foreach (object packet in liveOrder)
         {
-            finalText += "EVENT #" + (i + 1) + "\n" + packetLogs[i] + "\n\n";
+            finalText += Heading("● LIVE PACKET", UITheme.Accent) + Colorize(liveEntries[packet]) + "\n\n";
         }
 
-        if (!string.IsNullOrEmpty(currentPacket))
+        for (int i = packetLogs.Count - 1; i >= 0; i--)
         {
-            finalText += "CURRENT PACKET\n" + currentPacket;
+            finalText += Heading("EVENT #" + (i + 1), UITheme.TextSecondary) + Colorize(packetLogs[i]) + "\n\n";
         }
 
-        if (packetCount == 0 && string.IsNullOrEmpty(currentPacket))
+        if (packetLogs.Count == 0 && liveOrder.Count == 0)
         {
-            finalText += "Waiting for activity...";
+            finalText += $"<color={UITheme.Hex(UITheme.TextSecondary)}><i>Waiting for activity...</i></color>";
         }
 
-        logText.text = finalText;
+        logText.text = finalText.TrimEnd('\n');
 
         Canvas.ForceUpdateCanvases();
 
@@ -153,13 +165,8 @@ public class NetworkLogUI : MonoBehaviour
             textRect.sizeDelta = new Vector2(textRect.sizeDelta.x, Mathf.Min(textHeight, maxHeight - padding));
         }
 
-        if (textHeight > maxHeight - padding)
-        {
-            logText.overflowMode = TextOverflowModes.Ellipsis;
-        }
-        else
-        {
-            logText.overflowMode = TextOverflowModes.Overflow;
-        }
+        logText.overflowMode = textHeight > maxHeight - padding
+            ? TextOverflowModes.Ellipsis
+            : TextOverflowModes.Overflow;
     }
 }

@@ -6,117 +6,69 @@ public class DeviceConnector : MonoBehaviour
     [Header("Core References")]
     public NetworkManager networkManager;
     public GameObject cablePrefab;
-    
+
     [Header("UI Elements")]
-    public TMP_Text connectButtonText; 
+    public TMP_Text connectButtonText;
 
     [Header("State")]
     public bool isConnectingMode = false;
     private NetworkDevice selectedDeviceA;
 
+    public NetworkDevice PendingDevice => isConnectingMode ? selectedDeviceA : null;
+
+    void Start()
+    {
+        if (networkManager == null) networkManager = FindAnyObjectByType<NetworkManager>();
+    }
+
     public void ToggleConnectingMode()
     {
         isConnectingMode = !isConnectingMode;
-        selectedDeviceA = null; // Always clear half-selections if user cancels
-        
-        // Safety feature: Turn OFF Delete mode if we are trying to Connect
-        DeviceDeletionManager deleteManager = FindFirstObjectByType<DeviceDeletionManager>();
+        selectedDeviceA = null;
+
+        // Only one tool mode at a time
+        DeviceDeletionManager deleteManager = FindAnyObjectByType<DeviceDeletionManager>();
         if (deleteManager != null && isConnectingMode && deleteManager.isDeletionMode)
         {
-            deleteManager.ToggleDeletionMode(); 
+            deleteManager.ToggleDeletionMode();
         }
 
         UpdateUIButton();
-
-        Debug.Log("Connecting Mode is now: " + (isConnectingMode ? "ON" : "OFF"));
     }
 
     public void UpdateUIButton()
     {
-        if (connectButtonText != null)
-        {
-            if (isConnectingMode)
-            {
-                connectButtonText.text = "CANCEL CONNECT";
-                connectButtonText.color = Color.red; 
-            }
-            else
-            {
-                connectButtonText.text = "CONNECT DEVICES";
-                connectButtonText.color = Color.black; 
-            }
-        }
+        if (connectButtonText == null) return;
+
+        connectButtonText.text = !isConnectingMode ? "CONNECT DEVICES"
+            : selectedDeviceA == null ? "CANCEL CONNECT" : "SELECT 2ND DEVICE";
+        UITheme.SetButtonActive(connectButtonText, isConnectingMode, UITheme.ButtonAmber);
     }
 
     public void SelectDevice(NetworkDevice device)
     {
-        if (!isConnectingMode) return;
+        if (!isConnectingMode || device == null) return;
 
-        // User clicks the FIRST device
         if (selectedDeviceA == null)
         {
             selectedDeviceA = device;
-            Debug.Log("Selected First Device: " + selectedDeviceA.deviceName);
-            
-            if (connectButtonText != null)
-            {
-                connectButtonText.text = "SELECT 2ND DEVICE";
-            }
+            UpdateUIButton();
+            return;
         }
-        // User clicks the SECOND device
-        else if (selectedDeviceA != device)
+
+        if (selectedDeviceA == device) return;
+
+        if (networkManager != null && cablePrefab != null)
         {
-            NetworkDevice selectedDeviceB = device;
-
-            // Check for existing cables
-            NetworkConnection existingCable = null;
-            NetworkConnection[] allCables = FindObjectsByType<NetworkConnection>(FindObjectsSortMode.None);
-            
-            foreach (var cable in allCables)
-            {
-                if ((cable.deviceA == selectedDeviceA && cable.deviceB == selectedDeviceB) || 
-                    (cable.deviceA == selectedDeviceB && cable.deviceB == selectedDeviceA))
-                {
-                    existingCable = cable;
-                    break;
-                }
-            }
-
-            if (existingCable != null)
-            {
-                if (!existingCable.isConnected)
-                {
-                    existingCable.Reconnect();
-                    Debug.Log("Reconnected existing cable.");
-                }
-                else
-                {
-                    Debug.LogWarning("These devices are already connected!");
-                }
-            }
-            else
-            {
-                if (networkManager != null && cablePrefab != null)
-                {
-                    networkManager.ConnectDevices(selectedDeviceA, selectedDeviceB, cablePrefab);
-                }
-            }
-            
-            // Auto-refresh the connection UI
-            ConnectionUIManager connectionUI = FindFirstObjectByType<ConnectionUIManager>();
-            if (connectionUI != null)
-            {
-                connectionUI.LoadConnections();
-            }
-
-            // --- THE FIX FOR CONTINUOUS CONNECTION ---
-            // Reset the selection for the NEXT connection, but DO NOT turn off the mode!
-            selectedDeviceA = null; 
-            
-            // Reset the button back to the "CANCEL CONNECT" state
-            UpdateUIButton(); 
-            
-            Debug.Log("Connection complete. Connecting Mode is STILL ON for the next cable.");
+            networkManager.ConnectDevices(selectedDeviceA, device, cablePrefab);
         }
+        else
+        {
+            Debug.LogError("DeviceConnector: NetworkManager or cable prefab not assigned.");
+        }
+
+        // Stay in connect mode so several cables can be laid in a row
+        selectedDeviceA = null;
+        UpdateUIButton();
     }
 }

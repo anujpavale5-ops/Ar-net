@@ -31,14 +31,25 @@ public class DeviceLED : MonoBehaviour
         }
     }
 
+    private bool powered = true;
+
+    public void SetPowered(bool on)
+    {
+        powered = on;
+        StopAllCoroutines();
+        SetColor(on ? idleColor : Color.black);
+    }
+
     public void BlinkData()
     {
+        if (!powered) return;
         StopAllCoroutines();
         StartCoroutine(BlinkRoutine(activeColor));
     }
 
     public void BlinkError()
     {
+        if (!powered) return;
         StopAllCoroutines();
         StartCoroutine(BlinkRoutine(errorColor));
     }

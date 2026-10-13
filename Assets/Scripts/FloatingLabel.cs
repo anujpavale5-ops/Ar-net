@@ -24,6 +24,13 @@ public class FloatingLabel : MonoBehaviour
             return; 
         }
 
+        // Dark outline keeps white labels readable against the light floor
+        if (labelText != null)
+        {
+            labelText.outlineWidth = 0.25f;
+            labelText.outlineColor = new Color32(15, 18, 24, 255);
+        }
+
         RefreshText();
     }
 
@@ -32,8 +39,14 @@ public class FloatingLabel : MonoBehaviour
     {
         if (networkDevice != null && labelText != null)
         {
+            if (!networkDevice.isOnline)
+            {
+                labelText.text = networkDevice.deviceName + "\n<size=70%><color=#FF6A5E>OFFLINE</color></size>";
+                return;
+            }
+
             // 1. Check if the device is a Switch (make sure your prefab's Device Type is "Switch")
-            if (networkDevice.deviceType.ToLower() == "switch")
+            if (networkDevice.IsSwitch)
             {
                 // Switches don't need IPs, so just show the name
                 labelText.text = networkDevice.deviceName;

@@ -9,11 +9,12 @@ public class PacketUIManager : MonoBehaviour
     public NetworkLogUI networkLog;
 
     private NetworkManager networkManager;
-    private List<NetworkDevice> devices = new List<NetworkDevice>();
+    private readonly List<NetworkDevice> devices = new List<NetworkDevice>();
+    private int loadedVersion = -1;
 
     void Start()
     {
-        networkManager = FindFirstObjectByType<NetworkManager>();
+        networkManager = FindAnyObjectByType<NetworkManager>();
 
         if (networkManager == null)
         {
@@ -21,12 +22,11 @@ public class PacketUIManager : MonoBehaviour
             return;
         }
 
-        if (networkLog == null)
-        {
-            networkLog = FindFirstObjectByType<NetworkLogUI>();
-        }
+        if (networkLog == null) networkLog = FindAnyObjectByType<NetworkLogUI>();
 
-        // Initial load
+        if (sourceDropdown != null) sourceDropdown.onValueChanged.AddListener(_ => PreviewSelectedRoute());
+        if (destinationDropdown != null) destinationDropdown.onValueChanged.AddListener(_ => PreviewSelectedRoute());
+
         LoadDevices();
     }
 
@@ -35,173 +35,87 @@ public class PacketUIManager : MonoBehaviour
         LoadDevices();
     }
 
+    void LateUpdate()
+    {
+        // Devices get their final name right after spawning, so refresh lazily once per change
+        if (loadedVersion != NetworkDevice.TopologyVersion) LoadDevices();
+    }
+
     public void LoadDevices()
     {
         if (sourceDropdown == null || destinationDropdown == null) return;
 
-        string currentSource = sourceDropdown.options.Count > 0 ? sourceDropdown.options[sourceDropdown.value].text : "";
-        string currentDest = destinationDropdown.options.Count > 0 ? destinationDropdown.options[destinationDropdown.value].text : "";
+        loadedVersion = NetworkDevice.TopologyVersion;
+
+        string currentSource = SelectedName(sourceDropdown);
+        string currentDest = SelectedName(destinationDropdown);
 
         devices.Clear();
-
-        NetworkDevice[] foundDevices = FindObjectsByType<NetworkDevice>(FindObjectsSortMode.None);
-
-        foreach (NetworkDevice device in foundDevices)
+        foreach (NetworkDevice device in NetworkDevice.All)
         {
-            if (device != null && !device.isPreviewModel)
-            {
-                devices.Add(device);
-            }
+            if (device != null && !device.isPreviewModel && !device.IsSwitch) devices.Add(device);
         }
+        devices.Sort((a, b) => string.CompareOrdinal(a.deviceName, b.deviceName));
 
-        devices.Sort((a, b) => a.deviceName.CompareTo(b.deviceName));
-
-        List<string> deviceNames = new List<string>();
-        deviceNames.Add("-- Select Device --");
-
-        foreach (NetworkDevice device in devices)
-        {
-            deviceNames.Add(device.deviceName);
-        }
+        List<string> deviceNames = new List<string> { "-- Select Device --" };
+        foreach (NetworkDevice device in devices) deviceNames.Add(device.deviceName);
 
         sourceDropdown.ClearOptions();
         destinationDropdown.ClearOptions();
-
         sourceDropdown.AddOptions(deviceNames);
         destinationDropdown.AddOptions(deviceNames);
 
-        sourceDropdown.value = 0;
-        destinationDropdown.value = 0;
-
-        for (int i = 0; i < sourceDropdown.options.Count; i++)
-        {
-            if (sourceDropdown.options[i].text == currentSource) sourceDropdown.value = i;
-            if (destinationDropdown.options[i].text == currentDest) destinationDropdown.value = i;
-        }
+        sourceDropdown.SetValueWithoutNotify(Mathf.Max(0, deviceNames.IndexOf(currentSource)));
+        destinationDropdown.SetValueWithoutNotify(Mathf.Max(0, deviceNames.IndexOf(currentDest)));
 
         sourceDropdown.RefreshShownValue();
         destinationDropdown.RefreshShownValue();
+
+        PreviewSelectedRoute();
+    }
+
+    static string SelectedName(TMP_Dropdown dropdown)
+    {
+        return dropdown.options.Count > dropdown.value ? dropdown.options[dropdown.value].text : "";
+    }
+
+    NetworkDevice Selected(TMP_Dropdown dropdown)
+    {
+        int index = dropdown.value - 1;
+        return index >= 0 && index < devices.Count ? devices[index] : null;
+    }
+
+    void PreviewSelectedRoute()
+    {
+        if (NetworkVisualizer.Instance == null || networkManager == null) return;
+
+        NetworkDevice source = Selected(sourceDropdown);
+        NetworkDevice destination = Selected(destinationDropdown);
+
+        if (source == null || destination == null || source == destination)
+        {
+            NetworkVisualizer.Instance.ClearRoutePreview();
+            return;
+        }
+
+        List<NetworkDevice> route = networkManager.BuildRoute(source, destination, out string reason);
+        if (route != null) NetworkVisualizer.Instance.ShowRoute(route, true);
+        else NetworkVisualizer.Instance.ShowRoute(new List<NetworkDevice> { source, destination }, false, 0f, reason);
     }
 
     public void SendPacket()
     {
-        if (sourceDropdown.value == 0 || destinationDropdown.value == 0)
+        if (networkManager == null) return;
+
+        NetworkDevice source = Selected(sourceDropdown);
+        NetworkDevice destination = Selected(destinationDropdown);
+
+        if (source == null || destination == null)
         {
             Debug.LogWarning("Please select both a valid source and destination.");
             return;
         }
 
-        if (sourceDropdown.value == destinationDropdown.value)
-        {
-            Debug.LogWarning("Source and Destination cannot be the same device.");
-            return;
-        }
-
-        NetworkDevice source = devices[sourceDropdown.value - 1];
-        NetworkDevice destination = devices[destinationDropdown.value - 1];
-
-        if (source == null || destination == null)
-        {
-            Debug.LogError("Source or destination is null.");
-            return;
-        }
-
-        // --- NEW: Strict Layer 3 Two-Way Validation ---
-        if (!source.IsInSameSubnet(destination.ipAddress))
-        {
-            NetworkDevice[] allDevicesInScene = FindObjectsByType<NetworkDevice>(FindObjectsSortMode.None);
-            
-            // 1. Verify Source Gateway IS A ROUTER
-            bool sourceGatewayValid = false;
-            if (!string.IsNullOrEmpty(source.gateway))
-            {
-                foreach (NetworkDevice dev in allDevicesInScene)
-                {
-                    if (dev.ipAddress == source.gateway && dev.deviceType.ToLower() == "router") 
-                    {
-                        sourceGatewayValid = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!sourceGatewayValid)
-            {
-                Debug.LogWarning("DESTINATION UNREACHABLE: Source PC has missing or invalid Gateway Router.");
-                if (networkLog != null) networkLog.ShowFailedPacket(source, destination, "Failed: Source Gateway Unreachable.");
-                if (NetworkStatistics.Instance != null) { NetworkStatistics.Instance.PacketSent(); NetworkStatistics.Instance.PacketFailed(); }
-                
-                DeviceLED errorLed = source.GetComponentInChildren<DeviceLED>();
-                if (errorLed != null) errorLed.BlinkError();
-                return;
-            }
-
-            // 2. Verify Destination Gateway IS A ROUTER
-            bool destGatewayValid = false;
-            if (destination.deviceType.ToLower() == "router")
-            {
-                destGatewayValid = true;
-            }
-            else if (!string.IsNullOrEmpty(destination.gateway))
-            {
-                foreach (NetworkDevice dev in allDevicesInScene)
-                {
-                    if (dev.ipAddress == destination.gateway && dev.deviceType.ToLower() == "router") 
-                    {
-                        destGatewayValid = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!destGatewayValid)
-            {
-                Debug.LogWarning("REQUEST TIMED OUT: Target PC cannot route the reply back!");
-                if (networkLog != null) networkLog.ShowFailedPacket(source, destination, "Timeout: Target Gateway Invalid.");
-                if (NetworkStatistics.Instance != null) { NetworkStatistics.Instance.PacketSent(); NetworkStatistics.Instance.PacketFailed(); }
-                
-                DeviceLED errorLed = source.GetComponentInChildren<DeviceLED>();
-                if (errorLed != null) errorLed.BlinkError();
-                return;
-            }
-
-            Debug.Log("Cross-subnet traffic authorized. Both devices have valid gateway routers.");
-        }
-        // --------------------------------------
-
-        // --- PATHFINDING & LOGGING ---
-        List<NetworkDevice> path = networkManager.FindPath(source, destination);
-
-        if (path == null || path.Count == 0)
-        {
-            Debug.LogWarning("PacketUIManager: NO ROUTE AVAILABLE.");
-            
-            if (networkLog != null) 
-            {
-                networkLog.ShowFailedPacket(source, destination, "No physical cable connection found.");
-            }
-            
-            if (NetworkStatistics.Instance != null)
-            {
-                NetworkStatistics.Instance.PacketSent();
-                NetworkStatistics.Instance.PacketFailed();
-            }
-            
-            return;
-        }
-
-        // Spawn the packet
-        GameObject packetObj = Instantiate(networkManager.packetPrefab, source.transform.position, Quaternion.identity);
-        Packet packet = packetObj.GetComponent<Packet>();
-        
-        if (packet != null)
-        {
-            packet.Initialize(source, destination, path);
-            
-            if (NetworkStatistics.Instance != null)
-            {
-                NetworkStatistics.Instance.PacketSent();
-            }
-        }
+        networkManager.SendPacket(source, destination);
     }
 }

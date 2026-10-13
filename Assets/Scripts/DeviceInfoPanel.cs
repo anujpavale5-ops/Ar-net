@@ -19,10 +19,7 @@ public class DeviceInfoPanel : MonoBehaviour
 
         gameObject.SetActive(true);
 
-        NetworkConnection[] connections =
-            FindObjectsByType<NetworkConnection>(
-                FindObjectsSortMode.None
-            );
+        var connections = NetworkConnection.All;
 
         string connectedDevices = "";
 
@@ -60,7 +57,7 @@ public class DeviceInfoPanel : MonoBehaviour
             "DEVICE INFORMATION\n\n" +
             "Name: " + device.deviceName + "\n" +
             "IP: " + device.ipAddress + "\n" +
-            "Status: ● ONLINE\n\n" +
+            "Status: " + (device.isOnline ? "● ONLINE" : "○ OFFLINE") + "\n\n" +
             "CONNECTED TO\n" +
             connectedDevices;
 

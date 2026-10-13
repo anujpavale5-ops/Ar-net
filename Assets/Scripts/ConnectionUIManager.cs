@@ -9,14 +9,14 @@ public class ConnectionUIManager : MonoBehaviour
     public Button connectionButton;
     public TMP_Text connectionStatusText;
 
-    private List<NetworkConnection> validConnections = new List<NetworkConnection>();
+    private readonly List<NetworkConnection> validConnections = new List<NetworkConnection>();
     private NetworkConnection selectedConnection;
+    private int loadedVersion = -1;
 
     void Start()
     {
         if (connectionButton != null)
         {
-            // Ensure we don't accidentally add the listener multiple times
             connectionButton.onClick.RemoveAllListeners();
             connectionButton.onClick.AddListener(ToggleConnection);
         }
@@ -28,10 +28,14 @@ public class ConnectionUIManager : MonoBehaviour
         }
     }
 
-    // --- THIS IS THE MAGIC FIX FOR DYNAMIC CABLES ---
     void OnEnable()
     {
         LoadConnections();
+    }
+
+    void LateUpdate()
+    {
+        if (loadedVersion != NetworkDevice.TopologyVersion) LoadConnections();
     }
 
     public void LoadConnections()
@@ -42,60 +46,64 @@ public class ConnectionUIManager : MonoBehaviour
             return;
         }
 
+        loadedVersion = NetworkDevice.TopologyVersion;
+
+        NetworkConnection previousSelection = selectedConnection;
+
         validConnections.Clear();
-        connectionDropdown.ClearOptions();
+        List<string> options = new List<string> { "-- Select Connection --" };
 
-        // Find every single cable in the scene
-        NetworkConnection[] foundConnections = FindObjectsByType<NetworkConnection>(FindObjectsSortMode.None);
-
-        List<string> options = new List<string>();
-        
-        // Add a placeholder so the UI looks clean
-        options.Add("-- Select Connection --");
-
-        foreach (NetworkConnection connection in foundConnections)
+        foreach (NetworkConnection connection in NetworkConnection.All)
         {
             if (connection == null || connection.deviceA == null || connection.deviceB == null)
                 continue;
 
             validConnections.Add(connection);
-            string connectionName = connection.deviceA.deviceName + " ↔ " + connection.deviceB.deviceName;
-            options.Add(connectionName);
+            options.Add(connection.deviceA.deviceName + " ↔ " + connection.deviceB.deviceName);
         }
 
+        connectionDropdown.ClearOptions();
         connectionDropdown.AddOptions(options);
 
-        // Reset the UI to the placeholder state
-        connectionDropdown.value = 0;
+        int previousIndex = previousSelection != null ? validConnections.IndexOf(previousSelection) : -1;
+
+        if (previousIndex >= 0)
+        {
+            connectionDropdown.SetValueWithoutNotify(previousIndex + 1);
+            selectedConnection = previousSelection;
+            UpdateUI();
+        }
+        else
+        {
+            connectionDropdown.SetValueWithoutNotify(0);
+            ShowWaiting();
+        }
+
+        connectionDropdown.RefreshShownValue();
+    }
+
+    void ShowWaiting()
+    {
         selectedConnection = null;
-        
-        // Hide button/status until a real connection is selected
         if (connectionButton != null) connectionButton.gameObject.SetActive(false);
-        if (connectionStatusText != null) connectionStatusText.text = "Status: WAITING";
+        if (connectionStatusText != null)
+        {
+            connectionStatusText.text = "Status: WAITING";
+            connectionStatusText.color = UITheme.TextSecondary;
+        }
     }
 
     void OnConnectionSelected(int index)
     {
-        // Index 0 is the "-- Select Connection --" placeholder
-        if (index == 0)
-        {
-            selectedConnection = null;
-            if (connectionButton != null) connectionButton.gameObject.SetActive(false);
-            if (connectionStatusText != null) connectionStatusText.text = "Status: WAITING";
-            return;
-        }
-
-        // Subtract 1 because of the placeholder
         int adjustedIndex = index - 1;
 
         if (adjustedIndex < 0 || adjustedIndex >= validConnections.Count)
+        {
+            ShowWaiting();
             return;
+        }
 
         selectedConnection = validConnections[adjustedIndex];
-        
-        // Show the button now that a valid connection is selected
-        if (connectionButton != null) connectionButton.gameObject.SetActive(true);
-
         UpdateUI();
     }
 
@@ -104,14 +112,8 @@ public class ConnectionUIManager : MonoBehaviour
         if (selectedConnection == null)
             return;
 
-        if (selectedConnection.isConnected)
-        {
-            selectedConnection.Disconnect();
-        }
-        else
-        {
-            selectedConnection.Reconnect();
-        }
+        if (selectedConnection.isConnected) selectedConnection.Disconnect();
+        else selectedConnection.Reconnect();
 
         UpdateUI();
     }
@@ -121,35 +123,22 @@ public class ConnectionUIManager : MonoBehaviour
         if (selectedConnection == null)
             return;
 
+        if (connectionButton != null) connectionButton.gameObject.SetActive(true);
+
         if (connectionStatusText != null)
         {
-            if (selectedConnection.isConnected)
-            {
-                connectionStatusText.text = "Status: CONNECTED";
-                connectionStatusText.color = Color.green; // Optional: Adds a visual cue
-            }
-            else
-            {
-                connectionStatusText.text = "Status: DISCONNECTED";
-                connectionStatusText.color = Color.red;
-            }
+            connectionStatusText.text = selectedConnection.isConnected ? "Status: ● CONNECTED" : "Status: ○ DISCONNECTED";
+            connectionStatusText.color = selectedConnection.isConnected ? UITheme.Success : UITheme.Failure;
         }
 
         if (connectionButton != null)
         {
             TMP_Text buttonText = connectionButton.GetComponentInChildren<TMP_Text>();
+            if (buttonText != null) buttonText.text = selectedConnection.isConnected ? "DISCONNECT" : "RECONNECT";
 
-            if (buttonText != null)
-            {
-                if (selectedConnection.isConnected)
-                {
-                    buttonText.text = "DISCONNECT";
-                }
-                else
-                {
-                    buttonText.text = "RECONNECT";
-                }
-            }
+            // Amber to unplug, blue to plug back in
+            if (connectionButton.image != null)
+                connectionButton.image.color = selectedConnection.isConnected ? UITheme.ButtonAmber : UITheme.ButtonBlue;
         }
     }
 }
