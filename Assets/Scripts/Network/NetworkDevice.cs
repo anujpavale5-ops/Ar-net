@@ -63,6 +63,16 @@ public class NetworkDevice : MonoBehaviour, IPointerClickHandler
         boundsValid = true;
     }
 
+    // Centre of the device model (without desk/cabinet), used for aim assist
+    public Vector3 ModelCenter
+    {
+        get
+        {
+            RefreshBounds();
+            return modelBounds.center;
+        }
+    }
+
     // Where cables plug in: low on the device body, above any desk or cabinet
     public Vector3 PortPosition
     {

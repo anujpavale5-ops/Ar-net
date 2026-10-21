@@ -46,6 +46,9 @@ public class DeviceDeletionManager : MonoBehaviour
         if (Keyboard.current == null || !Keyboard.current.deleteKey.wasPressedThisFrame) return;
         if (PointerUtil.IsTyping()) return;
 
+        // In walk mode LabViewMode deletes whatever the crosshair (with aim assist) points at
+        if (PointerUtil.CursorCaptured) return;
+
         TryDeleteDeviceUnderPointer();
     }
 
@@ -65,6 +68,14 @@ public class DeviceDeletionManager : MonoBehaviour
                 ExecuteDeletion(device);
             }
         }
+    }
+
+    // Removes a device regardless of delete mode (keyboard shortcuts)
+    public bool RemoveDevice(NetworkDevice device)
+    {
+        if (device == null || device.isPreviewModel) return false;
+        ExecuteDeletion(device);
+        return true;
     }
 
     public void DeleteDevice(NetworkDevice device)

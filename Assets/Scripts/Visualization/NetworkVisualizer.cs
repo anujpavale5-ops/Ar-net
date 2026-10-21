@@ -349,6 +349,7 @@ public class NetworkVisualizer : MonoBehaviour
     void UpdatePendingLine()
     {
         NetworkDevice pending = connector != null ? connector.PendingDevice : null;
+        if (pending == null && LabViewMode.Instance != null) pending = LabViewMode.Instance.PendingCableFrom;
 
         if (pending == null || mainCamera == null || Mouse.current == null)
         {
@@ -576,7 +577,7 @@ public class NetworkVisualizer : MonoBehaviour
         StringBuilder text = new StringBuilder(subnetSummary);
         bool walking = LabViewMode.Instance != null && LabViewMode.Instance.IsFirstPerson;
         text.Append(walking
-            ? "\n<size=85%><color=#7FE8FF>WALK MODE</color><alpha=#77>  Mouse: look · WASD: walk · Shift: run · Click: use · 1-4: pick up device · Hold Alt: cursor · Tab: overview<alpha=#FF></size>"
+            ? "\n<size=85%><color=#7FE8FF>WALK MODE</color><alpha=#77>  E: cable · X: unplug · P: send packet · F: settings · C: console · Alt: mouse · H: controls · Tab: overview<alpha=#FF></size>"
             : "\n<size=85%><alpha=#77>Tab: walk mode · Right-drag: orbit · Middle-drag / WASD: pan · Scroll: zoom · F: frame · V: overlay · `: console<alpha=#FF></size>");
 
         if (routePath != null && routePath.Count >= 2 && !routePath.Exists(d => d == null))
